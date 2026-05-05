@@ -40,8 +40,21 @@ def doAuth(pamh):
 
 	syslog.syslog(syslog.LOG_INFO, "Attempting facial authentication for user " + pamh.get_user())
 
-	# Run compare as python3 subprocess to circumvent python version and import issues
-	status = subprocess.call(["/usr/bin/python3", os.path.dirname(os.path.abspath(__file__)) + "/compare.py", pamh.get_user()])
+	# Run compare as python3 subprocess to circumvent python version and import issues.
+	# Apply a hard timeout so a wedged compare.py (e.g. a camera that never returns
+	# a frame) cannot hang the PAM stack indefinitely. The configured per-attempt
+	# timeout plus a small grace period for orderly shutdown is the upper bound.
+	compare_timeout = config.getint("video", "timeout") + 5
+	try:
+		status = subprocess.run(
+			["/usr/bin/python3", os.path.dirname(os.path.abspath(__file__)) + "/compare.py", pamh.get_user()],
+			timeout=compare_timeout,
+		).returncode
+	except subprocess.TimeoutExpired:
+		pamh.conversation(pamh.Message(pamh.PAM_ERROR_MSG, "Face detection timeout reached"))
+		syslog.syslog(syslog.LOG_INFO, "Failure, compare.py exceeded " + str(compare_timeout) + "s and was killed")
+		syslog.closelog()
+		return pamh.PAM_AUTH_ERR
 
 	# Status 10 means we couldn't find any face models
 	if status == 10:
